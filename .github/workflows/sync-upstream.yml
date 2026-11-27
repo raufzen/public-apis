@@ -1,0 +1,65 @@
+name: Auto Sync Upstream
+
+on:
+  schedule:
+    # Runs daily at 02:00 UTC
+    - cron: '0 2 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Configure Git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Add Upstream and Fetch
+        run: |
+          git remote add upstream https://github.com/public-apis/public-apis.git || true
+          git fetch upstream master
+
+      - name: Check for New Upstream Commits
+        id: check_upstream
+        run: |
+          UPSTREAM_SHA=$(git rev-parse upstream/master)
+          LAST_SYNCED=$(cat .last_upstream_sync 2>/dev/null || echo "9fb3bdb62643400aaebee03a2ecce0cd1ec934eb")
+          echo "Upstream SHA: $UPSTREAM_SHA"
+          echo "Last Synced: $LAST_SYNCED"
+          if [ "$UPSTREAM_SHA" = "$LAST_SYNCED" ]; then
+            echo "Already up to date with upstream."
+            echo "new_commits=false" >> $GITHUB_OUTPUT
+          else
+            echo "New commits detected!"
+            echo "new_commits=true" >> $GITHUB_OUTPUT
+            echo "upstream_sha=$UPSTREAM_SHA" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Sync and Preserve Custom Header
+        if: steps.check_upstream.outputs.new_commits == 'true'
+        run: |
+          # Backup current custom header
+          sed -n '1,/^---/p' README.md > /tmp/header.md
+          
+          # Checkout latest README from upstream
+          git checkout upstream/master -- README.md
+          
+          # Re-apply custom header
+          sed -i '1,/^---/d' README.md
+          cat /tmp/header.md README.md > /tmp/new_readme.md
+          mv /tmp/new_readme.md README.md
+          
+          echo "${{ steps.check_upstream.outputs.upstream_sha }}" > .last_upstream_sync
+          git add README.md .last_upstream_sync
+          git commit -m "chore: sync latest entries from upstream public-apis" || true
+          git push origin main
